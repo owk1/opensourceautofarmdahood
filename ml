@@ -35,14 +35,13 @@ end
 -- Serviços
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
-local Character = LocalPlayer.Character
-local Humanoid = Character and Character:WaitForChild("Humanoid")
+local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local Humanoid = Character:WaitForChild("Humanoid")
 local Backpack = LocalPlayer:WaitForChild("Backpack")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local TextChatService = game:GetService("TextChatService")
 local RunService = game:GetService("RunService")
-local PathfindingService = game:GetService("PathfindingService")
 
 -- Configurações
 local TOOL_NAME = "Combat"
@@ -57,16 +56,15 @@ local ATTACK_INTERVAL = 0.5
 
 -- Configurações do Hop
 local AUTO_HOP = true
-local HOP_ON_DEATH = true
+local HOP_ON_DEATH = true -- Nova configuração: trocar de servidor ao morrer
 local HOP_TIME = 1800
 local MIN_PLAYERS = 4
-local MAX_PLAYERS_FOR_DEATH_HOP = 6
+local MAX_PLAYERS_FOR_DEATH_HOP = 6 -- Máximo de jogadores para trocar ao morrer
 local PlaceID = game.PlaceId
 local visitedServers = {}
 local cursor = ""
 local deathCount = 0
 local deathHopCooldown = 0
-local hopInProgress = false
 
 -- Configurações do Chat
 local AUTO_MSG = true
@@ -82,10 +80,10 @@ local messages = {
 local startTime = tick()
 local moneyCollected = 0
 local lastHopTime = tick()
+local isDead = false
 local lastActionTime = tick()
-local idleThreshold = 15
+local idleThreshold = 15 -- segundos sem ação
 local lastPosition = Vector3.new(0, 0, 0)
-local isRespawning = false
 
 -- Sistema de Anti-Idle
 local function checkIdle()
@@ -96,6 +94,7 @@ local function checkIdle()
         local currentPos = hrp.Position
         local distanceMoved = (currentPos - lastPosition).Magnitude
         
+        -- Se não se moveu pelo menos 2 unidades em idleThreshold segundos
         if distanceMoved < 2 and (currentTime - lastActionTime) > idleThreshold then
             print("⚠️ Personagem está idle! Tomando ações corretivas...")
             return true
@@ -108,12 +107,12 @@ local function checkIdle()
 end
 
 local function fixIdle()
-    if not Character or not Character.Parent then return end
-    
     print("Executando correção de idle...")
     
+    -- Tenta diferentes ações para sair do estado idle
     local actions = {
         function()
+            -- Pular
             if Humanoid then
                 Humanoid.Jump = true
                 task.wait(0.5)
@@ -121,18 +120,27 @@ local function fixIdle()
             end
         end,
         function()
+            -- Movimento lateral
             if Humanoid then
-                local hrp = Character:FindFirstChild("HumanoidRootPart")
-                if hrp then
-                    hrp.CFrame = hrp.CFrame * CFrame.new(10, 0, 0)
-                end
+                Humanoid:Move(Vector3.new(5, 0, 0))
+                task.wait(1)
+                Humanoid:Move(Vector3.new(0, 0, 0))
             end
         end,
         function()
+            -- Teleportar para posição segura
+            local hrp = Character and Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                hrp.CFrame = CFrame.new(0, 10, 0)
+            end
+        end,
+        function()
+            -- Reequipar tool
             forceEquipTool()
         end
     }
     
+    -- Executa ações aleatórias para desbloquear
     for _, action in ipairs(actions) do
         pcall(action)
         task.wait(0.5)
@@ -144,59 +152,52 @@ end
 
 -- Sistema de verificação do Combat
 local function checkToolEquipped()
-    if not Character or not Character.Parent then return false, false end
+    if not Character or not Character.Parent then return false end
     
     -- Verifica se o Combat está equipado no personagem
     tool = Character:FindFirstChild(TOOL_NAME)
     if tool and tool:IsA("Tool") then
-        return true, true
+        return true
     end
     
     -- Verifica se está na mochila
     tool = Backpack:FindFirstChild(TOOL_NAME)
     if tool and tool:IsA("Tool") then
-        return false, true
+        return false, true -- Não está equipado, mas existe na mochila
     end
     
-    -- Procura por qualquer ferramenta com nome similar
-    for _, child in pairs(Backpack:GetChildren()) do
-        if child:IsA("Tool") and string.find(child.Name:lower(), "combat") then
-            tool = child
-            return false, true
-        end
-    end
-    
-    for _, child in pairs(Character:GetChildren()) do
-        if child:IsA("Tool") and string.find(child.Name:lower(), "combat") then
-            tool = child
-            return true, true
-        end
-    end
-    
-    return false, false
-end
-
-local function isAlive()
-    return Character and Character.Parent and Humanoid and Humanoid.Health > 0
+    return false, false -- Não existe
 end
 
 local function forceEquipTool()
-    if not isAlive() then 
+    if not Character or not Character.Parent or not Humanoid then 
         return false 
     end
     
-    local isEquipped, exists = checkToolEquipped()
-    
-    if isEquipped then
-        return true
-    elseif exists and tool then
-        Humanoid:EquipTool(tool)
-        print("Combat equipado forçadamente")
-        lastActionTime = tick()
-        return true
+    -- Verifica se o personagem está morto
+    if Humanoid.Health <= 0 then
+        isDead = true
+        return false
+    else
+        isDead = false
     end
     
-    print("❌ Combat não encontrado")
+    -- Procura pelo Combat
+    tool = Backpack:FindFirstChild(TOOL_NAME) or Character:FindFirstChild(TOOL_NAME)
+    
+    if tool and tool:IsA("Tool") then
+        -- Se o tool está na mochila, equipa
+        if tool.Parent == Backpack then
+            Humanoid:EquipTool(tool)
+            print("Combat equipado forçadamente")
+            lastActionTime = tick()
+            return true
+        -- Se já está equipado
+        elseif tool.Parent == Character then
+            return true
+        end
+    end
+    
     return false
 end
 
@@ -216,10 +217,8 @@ end
 
 initHopSystem()
 
+-- Função para encontrar servidor low (poucos jogadores)
 local function findLowPlayerServer(maxPlayers)
-    if hopInProgress then return false end
-    hopInProgress = true
-    
     local url = 'https://games.roblox.com/v1/games/' .. PlaceID .. '/servers/Public?sortOrder=Asc&limit=100'
     if cursor ~= "" then url = url .. '&cursor=' .. cursor end
     
@@ -227,13 +226,11 @@ local function findLowPlayerServer(maxPlayers)
         return HttpService:JSONDecode(game:HttpGet(url))
     end)
     
-    if not success or not data or not data.data then 
-        hopInProgress = false
-        return false 
-    end
+    if not success or not data or not data.data then return false end
     
     cursor = data.nextPageCursor or ""
     
+    -- Coleta todos os servidores disponíveis
     local servers = {}
     for _, server in pairs(data.data) do
         local id = tostring(server.id)
@@ -257,10 +254,12 @@ local function findLowPlayerServer(maxPlayers)
         end
     end
     
+    -- Ordena por número de jogadores (do menor para o maior)
     table.sort(servers, function(a, b)
         return a.players < b.players
     end)
     
+    -- Tenta conectar ao servidor com menos jogadores
     for _, server in ipairs(servers) do
         if server.players <= maxPlayers then
             table.insert(visitedServers, server.id)
@@ -278,108 +277,66 @@ local function findLowPlayerServer(maxPlayers)
                 TeleportService:TeleportToPlaceInstance(PlaceID, server.id, LocalPlayer)
             end)
             
-            hopInProgress = false
-            return teleportSuccess
+            if teleportSuccess then
+                return true
+            end
         end
     end
     
-    hopInProgress = false
     return false
 end
 
-local function hopOnDeath()
-    if not HOP_ON_DEATH then return false end
-    if hopInProgress then return false end
-    if tick() - deathHopCooldown < 60 then return false end
-    
-    print("💀 Personagem morreu! Procurando servidor low...")
-    
-    local success = findLowPlayerServer(MAX_PLAYERS_FOR_DEATH_HOP)
-    
-    if success then
-        deathHopCooldown = tick()
-        task.wait(5)
-    else
-        print("❌ Não foi encontrar servidor low disponível")
-    end
-    
-    return success
+local function findServer()
+    return findLowPlayerServer(MIN_PLAYERS)
 end
 
--- Sistema de movimentação com Pathfinding
-local function moveToPosition(targetPosition)
-    if not isAlive() then return false end
+local function findVeryLowPlayerServer()
+    return findLowPlayerServer(3) -- Procura servidor com 3 ou menos jogadores
+end
+
+local function shouldHop()
+    if not AUTO_HOP then return false end
+    if tick() - startTime < HOP_TIME then return false end
+    if #Players:GetPlayers() <= MIN_PLAYERS then return false end
+    if tick() - lastHopTime < 300 then return false end
+    if tick() - deathHopCooldown < 60 then return false end -- Cooldown após morte hop
     
-    local hrp = Character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return false end
-    
-    local distance = (hrp.Position - targetPosition).Magnitude
-    
-    -- Se estiver muito longe, teleporta
-    if distance > 100 then
-        hrp.CFrame = CFrame.new(targetPosition + Vector3.new(0, 5, 0))
-        task.wait(1)
-        return true
-    end
-    
-    -- Usa pathfinding para distâncias médias
-    if distance > 10 then
-        local path = PathfindingService:CreatePath({
-            AgentRadius = 2,
-            AgentHeight = 5,
-            AgentCanJump = true
-        })
-        
-        path:ComputeAsync(hrp.Position, targetPosition)
-        
-        if path.Status == Enum.PathStatus.Success then
-            local waypoints = path:GetWaypoints()
-            
-            for _, waypoint in ipairs(waypoints) do
-                if not isAlive() then break end
-                
-                Humanoid:MoveTo(waypoint.Position)
-                
-                local reached = false
-                local startTime = tick()
-                
-                while not reached and tick() - startTime < 3 do
-                    if (hrp.Position - waypoint.Position).Magnitude < 4 then
-                        reached = true
-                    end
-                    task.wait()
-                end
-                
-                if waypoint.Action == Enum.PathWaypointAction.Jump then
-                    Humanoid.Jump = true
-                end
-                
-                task.wait(0.1)
-            end
-            
-            return true
-        end
-    end
-    
-    -- Movimento direto para distâncias curtas
-    Humanoid:MoveTo(targetPosition)
-    
-    local startTime = tick()
-    while (hrp.Position - targetPosition).Magnitude > 4 and tick() - startTime < 3 do
-        if not isAlive() then return false end
-        task.wait()
-    end
-    
-    lastActionTime = tick()
     return true
 end
 
-local function moveTo(cframe)
-    if not cframe or not isAlive() then return false end
-    return moveToPosition(cframe.Position)
+-- Função para trocar de servidor após morte
+local function hopOnDeath()
+    if not HOP_ON_DEATH then return false end
+    if tick() - deathHopCooldown < 60 then return false end -- Cooldown de 60 segundos
+    
+    deathCount = deathCount + 1
+    deathHopCooldown = tick()
+    
+    print("💀 Personagem morreu! Tentando encontrar servidor low...")
+    print("📊 Mortes totais: " .. deathCount)
+    
+    -- Tenta encontrar servidor com muito poucos jogadores primeiro
+    if findVeryLowPlayerServer() then
+        print("✅ Encontrado servidor muito low! Teleportando...")
+        task.wait(5)
+        return true
+    end
+    
+    -- Se não encontrar, tenta com mais jogadores
+    if findLowPlayerServer(MAX_PLAYERS_FOR_DEATH_HOP) then
+        print("✅ Encontrado servidor low! Teleportando...")
+        task.wait(5)
+        return true
+    end
+    
+    print("❌ Não foi encontrar servidor low disponível")
+    return false
 end
 
--- Sistema de chat melhorado
+-- Sistema de chat melhorado (não bloqueante)
+local msgQueue = {}
+local isSendingMsg = false
+
 local function sendChatAsync(msg)
     if not msg or msg == "" then return false end
     
@@ -387,22 +344,29 @@ local function sendChatAsync(msg)
         local channel = TextChatService.TextChannels:FindFirstChild("RBXGeneral")
         if channel then
             channel:SendAsync(msg)
-            lastActionTime = tick()
+            lastActionTime = tick() -- Atualiza tempo da última ação
             return true
         end
         return false
     end)
 end
 
+-- Sistema de mensagens automáticas melhorado
 local msgIndex = 1
 local function startAutoChat()
     if not AUTO_MSG or #messages == 0 then return end
     
     task.spawn(function()
         while running and AUTO_MSG do
-            if isAlive() then
+            -- Envia mensagem se não estiver enviando e houver mensagens na fila
+            if not isSendingMsg and #msgQueue == 0 then
                 local msg = messages[msgIndex]
-                sendChatAsync(msg)
+                isSendingMsg = true
+                
+                task.spawn(function()
+                    sendChatAsync(msg)
+                    isSendingMsg = false
+                end)
                 
                 msgIndex = msgIndex + 1
                 if msgIndex > #messages then
@@ -417,25 +381,85 @@ end
 
 -- Funções do Farm
 local function equipTool()
-    if not isAlive() then return false end
-    return forceEquipTool()
+    local isEquipped, existsInBackpack = checkToolEquipped()
+    
+    if isEquipped then
+        return true
+    elseif existsInBackpack then
+        return forceEquipTool()
+    end
+    
+    return false
+end
+
+local function validateChar()
+    if not Character or not Character.Parent then
+        Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+        Humanoid = Character:WaitForChild("Humanoid")
+        isDead = false
+        lastActionTime = tick()
+        return false
+    end
+    
+    -- Verifica se o personagem está morto
+    if Humanoid.Health <= 0 then
+        if not isDead then
+            print("Personagem morreu, aguardando respawn...")
+            isDead = true
+            
+            -- Se HOP_ON_DEATH está ativado, tenta trocar de servidor
+            if HOP_ON_DEATH and deathCount < 3 then -- Limite de 3 tentativas consecutivas
+                task.wait(2) -- Espera um pouco antes de tentar trocar
+                if hopOnDeath() then
+                    return false
+                end
+            end
+        end
+        return false
+    end
+    
+    isDead = false
+    return true
+end
+
+local function avoidChair()
+    if Humanoid and Humanoid.Sit then
+        Humanoid.Sit = false
+        local hrp = Character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            hrp.CFrame = hrp.CFrame * CFrame.new(5, 0, 0)
+        end
+        task.wait(0.5)
+        lastActionTime = tick()
+    end
+end
+
+local function moveTo(pos)
+    if not pos or not validateChar() then return false end
+    
+    local hrp = Character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        hrp.CFrame = pos
+        lastActionTime = tick()
+        task.wait(MOVE_DELAY)
+        return true
+    end
+    return false
 end
 
 local function collectMoney()
-    if not isAlive() then return 0 end
+    if not validateChar() then return 0 end
     
     local drops = game.Workspace:FindFirstChild("Ignored")
     drops = drops and drops:FindFirstChild("Drop")
     if not drops then return 0 end
     
     local collected = 0
-    local hrp = Character:FindFirstChild("HumanoidRootPart")
-    
-    if not hrp then return 0 end
     
     for _, money in ipairs(drops:GetChildren()) do
         if money.Name == "MoneyDrop" and money:FindFirstChild("ClickDetector") then
-            if (money.Position - hrp.Position).Magnitude <= 20 then
+            local hrp = Character:FindFirstChild("HumanoidRootPart")
+            if hrp and (money.Position - hrp.Position).Magnitude <= 20 then
                 if moveTo(money.CFrame) then
                     fireclickdetector(money.ClickDetector)
                     collected = collected + 1
@@ -451,45 +475,30 @@ local function collectMoney()
 end
 
 local function attackATM(atm)
-    if not isAlive() or not atm or not atm.Parent then return false end
+    if not validateChar() or not atm or not atm.Parent then return false end
     
     local openPart = atm:FindFirstChild("Open")
     if not openPart then return false end
     
-    -- Primeiro equipa a ferramenta
-    if not equipTool() then 
-        print("❌ Não foi possível equipar o Combat, abortando ataque")
-        return false
-    end
+    avoidChair()
     
-    -- Move até o ATM
     if not moveTo(openPart.CFrame * CFrame.new(1, 0, 2)) then
-        print("❌ Não foi possível chegar ao ATM")
         return false
     end
     
-    task.wait(0.5) -- Pequena pausa antes de atacar
+    avoidChair()
     
-    -- Verifica novamente se está vivo e com a ferramenta
-    if not isAlive() then return false end
-    
-    local isEquipped, _ = checkToolEquipped()
-    if not isEquipped then
-        print("❌ Ferramenta não está equipada, reequipando...")
-        equipTool()
+    if not equipTool() then 
+        print("Não foi possível equipar o Combat")
+        return false
     end
     
-    -- Ataca o ATM
     for i = 1, ATTACK_REPEATS do
-        if not isAlive() then break end
+        if not validateChar() then break end
         
-        -- Verifica a cada 3 ataques se a ferramenta ainda está equipada
-        if i % 3 == 0 then
-            local isEquipped, _ = checkToolEquipped()
-            if not isEquipped and not equipTool() then
-                print("❌ Perdeu a ferramenta durante o ataque")
-                break
-            end
+        -- Verifica se o combat ainda está equipado durante o ataque
+        if i % 5 == 0 then -- Verifica a cada 5 ataques
+            equipTool()
         end
         
         if tool and tool.Parent == Character then
@@ -503,109 +512,110 @@ local function attackATM(atm)
     return true
 end
 
--- Sistema de monitoramento
+-- Sistema de monitoramento contínuo do Combat
 local function startToolMonitor()
     task.spawn(function()
         while running do
-            task.wait(3)
+            task.wait(5) -- Verifica a cada 5 segundos
             
             if not running then break end
-            if not isAlive() then 
-                task.wait(2)
-                continue 
-            end
             
-            local isEquipped, exists = checkToolEquipped()
-            
-            if exists and not isEquipped then
-                print("🔧 Combat na mochila mas não equipado. Equipando...")
-                forceEquipTool()
-            elseif not exists then
-                print("⚠️ Combat não encontrado")
+            if validateChar() then
+                local isEquipped, existsInBackpack = checkToolEquipped()
+                
+                if existsInBackpack and not isEquipped then
+                    print("Combat detectado na mochila mas não equipado. Equipando...")
+                    forceEquipTool()
+                elseif not existsInBackpack then
+                    print("Combat não encontrado na mochila ou no personagem")
+                end
             end
         end
     end)
 end
 
+-- Sistema Anti-Idle
 local function startAntiIdle()
     task.spawn(function()
         while running do
-            task.wait(3)
+            task.wait(3) -- Verifica a cada 3 segundos
             
             if not running then break end
-            if not isAlive() or isRespawning then 
-                task.wait(2)
-                continue 
-            end
             
-            if checkIdle() then
-                fixIdle()
+            if validateChar() then
+                if checkIdle() then
+                    fixIdle()
+                end
             end
         end
     end)
 end
 
--- Loop Principal Corrigido
+-- Loop Principal
 local function mainLoop()
-    print("✅ Script iniciado com sucesso!")
-    print("⚙️ Configurações: Hop=" .. tostring(AUTO_HOP) .. ", DeathHop=" .. tostring(HOP_ON_DEATH))
+    print("Script iniciado")
+    print("Configurações:")
+    print("  Hop Automático: " .. tostring(AUTO_HOP))
+    print("  Hop ao Morrer: " .. tostring(HOP_ON_DEATH))
+    print("  Mensagens Auto: " .. tostring(AUTO_MSG))
     
-    -- Aguarda personagem inicial
-    if not Character then
-        Character = LocalPlayer.CharacterAdded:Wait()
-        task.wait(1)
+    -- Inicializa última posição
+    local hrp = Character and Character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        lastPosition = hrp.Position
     end
     
-    if not Humanoid then
-        Humanoid = Character:WaitForChild("Humanoid")
-    end
+    lastActionTime = tick()
     
-    -- Inicializa sistemas
+    -- Inicia o monitor do Combat
     startToolMonitor()
+    
+    -- Inicia o sistema anti-idle
     startAntiIdle()
+    
+    -- Inicia o sistema de mensagens automáticas
     startAutoChat()
     
-    -- Loop principal
+    -- Loop principal otimizado
     while running do
-        -- Verifica se está vivo
-        if not isAlive() then
+        -- Verifica necessidade de hop
+        if shouldHop() then
+            lastHopTime = tick()
+            
+            if findServer() then
+                task.wait(10)
+                return
+            else
+                startTime = tick() - 1200
+            end
+        end
+        
+        -- Verifica se personagem é válido
+        if not validateChar() then
             task.wait(1)
             continue
         end
         
-        -- Atualiza posição
-        local hrp = Character:FindFirstChild("HumanoidRootPart")
+        -- Atualiza posição para cálculo de idle
+        hrp = Character and Character:FindFirstChild("HumanoidRootPart")
         if hrp then
             lastPosition = hrp.Position
         end
         
-        -- Verifica hop automático
-        if AUTO_HOP and tick() - startTime > HOP_TIME and tick() - lastHopTime > 300 then
-            lastHopTime = tick()
-            if findLowPlayerServer(MIN_PLAYERS) then
-                task.wait(10)
-                return
-            end
-        end
+        -- Força o equipamento do Combat
+        equipTool()
         
-        -- Equipa ferramenta antes de qualquer ação
-        if not equipTool() then
-            print("❌ Sem ferramenta, aguardando...")
-            task.wait(2)
-            continue
-        end
-        
-        -- Procura caixas eletrônicos
+        -- Busca caixas eletrônicos
         local atms = game.Workspace:FindFirstChild("Cashiers")
         if not atms then
-            print("⏳ Caixas não encontrados, aguardando...")
+            print("Caixas eletrônicos não encontrados, aguardando...")
             task.wait(3)
             continue
         end
         
         local atmList = atms:GetChildren()
         if #atmList == 0 then
-            print("⏳ Nenhum caixa disponível, aguardando...")
+            print("Nenhum caixa eletrônico disponível, aguardando...")
             task.wait(2)
             continue
         end
@@ -614,19 +624,18 @@ local function mainLoop()
         local attacked = false
         
         for i = cashierIndex, #atmList do
-            if not running or not isAlive() then break end
+            if not running then break end
+            if not validateChar() then break end
             
             local atm = atmList[i]
-            
-            print("🎯 Atacando caixa " .. i .. " de " .. #atmList)
             
             if attackATM(atm) then
                 collectMoney()
                 attacked = true
+                lastActionTime = tick()
                 task.wait(0.5)
             else
-                print("❌ Falha ao atacar caixa, tentando próximo...")
-                task.wait(0.2)
+                task.wait(0.1)
             end
             
             cashierIndex = i + 1
@@ -634,69 +643,70 @@ local function mainLoop()
                 cashierIndex = 1
             end
             
-            task.wait(0.3)
+            -- Pequena pausa entre caixas
+            task.wait(0.2)
         end
         
-        -- Pausa entre ciclos
-        if attacked then
-            task.wait(1)
+        -- Se não atacou nenhum caixa, espera menos tempo
+        if not attacked then
+            task.wait(0.5)
         else
-            print("🔁 Nenhum caixa atacado, reiniciando ciclo...")
-            task.wait(2)
+            task.wait(1)
         end
     end
 end
 
--- Eventos Corrigidos
-local function setupCharacterEvents()
-    LocalPlayer.CharacterAdded:Connect(function(newChar)
-        print("🔄 Personagem respawnando...")
-        isRespawning = true
-        
-        Character = newChar
-        task.wait(1) -- Aguarda carregamento
-        
-        Humanoid = newChar:WaitForChild("Humanoid")
-        lastActionTime = tick()
-        
-        -- Aguarda ferramenta aparecer
-        local maxWait = 10
-        local waited = 0
-        
-        while waited < maxWait do
-            if Backpack:FindFirstChild(TOOL_NAME) then
-                break
-            end
-            
-            -- Também verifica por ferramentas similares
-            local found = false
-            for _, child in pairs(Backpack:GetChildren()) do
-                if child:IsA("Tool") and string.find(child.Name:lower(), "combat") then
-                    found = true
-                    break
-                end
-            end
-            
-            if found then break end
-            
-            task.wait(0.5)
-            waited = waited + 0.5
+-- Eventos
+LocalPlayer.CharacterAdded:Connect(function(newChar)
+    Character = newChar
+    Humanoid = newChar:WaitForChild("Humanoid")
+    isDead = false
+    lastActionTime = tick()
+    
+    task.wait(1.5) -- Espera reduzida para o personagem carregar
+    
+    -- Espera pelo Combat aparecer na mochila
+    local maxWait = 8
+    local waited = 0
+    
+    while waited < maxWait do
+        if Backpack:FindFirstChild(TOOL_NAME) then
+            break
         end
+        task.wait(0.5)
+        waited = waited + 1
+    end
+    
+    forceEquipTool()
+    print("Personagem respawnou, Combat reequipado")
+end)
+
+-- Monitora quando o personagem morre
+if Humanoid then
+    Humanoid.Died:Connect(function()
+        isDead = true
+        print("💀 Personagem morreu!")
         
-        forceEquipTool()
-        isRespawning = false
-        print("✅ Personagem respawnado e preparado")
+        -- Espera um pouco e verifica se deve trocar de servidor
+        if HOP_ON_DEATH then
+            task.wait(2)
+            hopOnDeath()
+        end
     end)
 end
 
--- Inicialização Segura
-setupCharacterEvents()
-
--- Se já temos personagem, força equipamento inicial
-if Character and Humanoid then
-    task.wait(1)
-    forceEquipTool()
-end
+-- Monitora movimento para atualizar idle
+RunService.Heartbeat:Connect(function()
+    if Character and Character.Parent then
+        local hrp = Character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            local velocity = hrp.AssemblyLinearVelocity
+            if velocity.Magnitude > 2 then
+                lastActionTime = tick()
+            end
+        end
+    end
+end)
 
 -- Comandos
 LocalPlayer.Chatted:Connect(function(msg)
@@ -704,27 +714,53 @@ LocalPlayer.Chatted:Connect(function(msg)
     
     if cmd == "/stop" then
         running = false
-        print("🛑 Script parado")
+        print("Script parado")
     elseif cmd == "/hop" then
-        findLowPlayerServer(MIN_PLAYERS)
+        findServer()
+    elseif cmd == "/hoplow" then
+        print("Procurando servidor low...")
+        findLowPlayerServer(MAX_PLAYERS_FOR_DEATH_HOP)
     elseif cmd == "/stats" then
         local elapsed = math.floor((tick() - startTime) / 60)
-        print("📊 Tempo: " .. elapsed .. "m | Dinheiro: " .. moneyCollected)
-        print("💀 Mortes: " .. deathCount)
-    elseif cmd == "/fixidle" then
-        fixIdle()
+        local currentPlayers = #Players:GetPlayers()
+        print("Tempo: " .. elapsed .. "m | Dinheiro: " .. moneyCollected)
+        print("Jogadores: " .. currentPlayers .. " | Mortes: " .. deathCount)
+    elseif cmd == "/msg on" then
+        AUTO_MSG = true
+        startAutoChat()
+        print("Mensagens ON")
+    elseif cmd == "/msg off" then
+        AUTO_MSG = false
+        print("Mensagens OFF")
+    elseif cmd:sub(1, 5) == "/msg " then
+        sendChatAsync(msg:sub(6))
     elseif cmd == "/checktool" then
-        local isEquipped, exists = checkToolEquipped()
+        local isEquipped, existsInBackpack = checkToolEquipped()
         if isEquipped then
-            print("✅ Combat equipado")
-        elseif exists then
-            print("⚠️ Combat na mochila (não equipado)")
+            print("✓ Combat equipado")
+        elseif existsInBackpack then
+            print("✓ Combat na mochila (não equipado)")
             forceEquipTool()
         else
-            print("❌ Combat não encontrado")
+            print("✗ Combat não encontrado")
         end
+    elseif cmd == "/fixidle" then
+        fixIdle()
+    elseif cmd == "/reset" then
+        lastActionTime = tick()
+        print("Tempo de ação resetado")
+    elseif cmd == "/deathhop on" then
+        HOP_ON_DEATH = true
+        print("Hop ao morrer: ON")
+    elseif cmd == "/deathhop off" then
+        HOP_ON_DEATH = false
+        print("Hop ao morrer: OFF")
+    elseif cmd == "/forcereset" then
+        deathCount = 0
+        deathHopCooldown = 0
+        print("Contadores de morte resetados")
     end
 end)
 
--- Inicia o loop principal
+-- Inicialização
 mainLoop()

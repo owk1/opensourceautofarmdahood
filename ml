@@ -55,8 +55,8 @@ local ATTACK_INTERVAL = 0.5
 
 -- Configurações do Hop
 local AUTO_HOP = true
-local HOP_TIME = 1800
-local MIN_PLAYERS = 4
+local HOP_TIME = 300
+local MIN_PLAYERS = 2
 local PlaceID = game.PlaceId
 local visitedServers = {}
 local cursor = ""
@@ -66,7 +66,7 @@ local AUTO_MSG = true
 local MSG_INTERVAL = 30
 local messages = {
     "buy da hood cash at letal,gg",
-    "get da hood cash accs at letal,gg",
+    "get da hood cash at letal,gg",
     "get sorotonin external at letal,gg",
     "get matcha external at letal,gg"
 }

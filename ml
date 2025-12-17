@@ -56,7 +56,7 @@ local ATTACK_INTERVAL = 0.5
 
 -- Configurações do Hop
 local AUTO_HOP = true
-local HOP_TIME = 1800
+local HOP_TIME = 300
 local MIN_PLAYERS = 4
 local PlaceID = game.PlaceId
 local visitedServers = {}

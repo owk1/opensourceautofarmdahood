@@ -56,11 +56,15 @@ local ATTACK_INTERVAL = 0.5
 
 -- Configurações do Hop
 local AUTO_HOP = true
+local HOP_ON_DEATH = true -- Nova configuração: trocar de servidor ao morrer
 local HOP_TIME = 1800
 local MIN_PLAYERS = 4
+local MAX_PLAYERS_FOR_DEATH_HOP = 6 -- Máximo de jogadores para trocar ao morrer
 local PlaceID = game.PlaceId
 local visitedServers = {}
 local cursor = ""
+local deathCount = 0
+local deathHopCooldown = 0
 
 -- Configurações do Chat
 local AUTO_MSG = true
@@ -197,7 +201,7 @@ local function forceEquipTool()
     return false
 end
 
--- Sistema de Hop
+-- Sistema de Hop melhorado
 local function initHopSystem()
     local success = pcall(function()
         if isfile and isfile("NotSameServers.json") then
@@ -212,6 +216,122 @@ local function initHopSystem()
 end
 
 initHopSystem()
+
+-- Função para encontrar servidor low (poucos jogadores)
+local function findLowPlayerServer(maxPlayers)
+    local url = 'https://games.roblox.com/v1/games/' .. PlaceID .. '/servers/Public?sortOrder=Asc&limit=100'
+    if cursor ~= "" then url = url .. '&cursor=' .. cursor end
+    
+    local success, data = pcall(function()
+        return HttpService:JSONDecode(game:HttpGet(url))
+    end)
+    
+    if not success or not data or not data.data then return false end
+    
+    cursor = data.nextPageCursor or ""
+    
+    -- Coleta todos os servidores disponíveis
+    local servers = {}
+    for _, server in pairs(data.data) do
+        local id = tostring(server.id)
+        local playing = tonumber(server.playing) or 0
+        
+        if playing <= maxPlayers and id ~= game.JobId then
+            local alreadyVisited = false
+            for _, visited in ipairs(visitedServers) do
+                if tostring(visited) == id then
+                    alreadyVisited = true
+                    break
+                end
+            end
+            
+            if not alreadyVisited then
+                table.insert(servers, {
+                    id = id,
+                    players = playing
+                })
+            end
+        end
+    end
+    
+    -- Ordena por número de jogadores (do menor para o maior)
+    table.sort(servers, function(a, b)
+        return a.players < b.players
+    end)
+    
+    -- Tenta conectar ao servidor com menos jogadores
+    for _, server in ipairs(servers) do
+        if server.players <= maxPlayers then
+            table.insert(visitedServers, server.id)
+            if #visitedServers > 50 then
+                table.remove(visitedServers, 1)
+            end
+            
+            pcall(function()
+                writefile("NotSameServers.json", HttpService:JSONEncode(visitedServers))
+            end)
+            
+            print("🔄 Conectando ao servidor low com " .. server.players .. " jogadores...")
+            
+            local teleportSuccess = pcall(function()
+                TeleportService:TeleportToPlaceInstance(PlaceID, server.id, LocalPlayer)
+            end)
+            
+            if teleportSuccess then
+                return true
+            end
+        end
+    end
+    
+    return false
+end
+
+local function findServer()
+    return findLowPlayerServer(MIN_PLAYERS)
+end
+
+local function findVeryLowPlayerServer()
+    return findLowPlayerServer(3) -- Procura servidor com 3 ou menos jogadores
+end
+
+local function shouldHop()
+    if not AUTO_HOP then return false end
+    if tick() - startTime < HOP_TIME then return false end
+    if #Players:GetPlayers() <= MIN_PLAYERS then return false end
+    if tick() - lastHopTime < 300 then return false end
+    if tick() - deathHopCooldown < 60 then return false end -- Cooldown após morte hop
+    
+    return true
+end
+
+-- Função para trocar de servidor após morte
+local function hopOnDeath()
+    if not HOP_ON_DEATH then return false end
+    if tick() - deathHopCooldown < 60 then return false end -- Cooldown de 60 segundos
+    
+    deathCount = deathCount + 1
+    deathHopCooldown = tick()
+    
+    print("💀 Personagem morreu! Tentando encontrar servidor low...")
+    print("📊 Mortes totais: " .. deathCount)
+    
+    -- Tenta encontrar servidor com muito poucos jogadores primeiro
+    if findVeryLowPlayerServer() then
+        print("✅ Encontrado servidor muito low! Teleportando...")
+        task.wait(5)
+        return true
+    end
+    
+    -- Se não encontrar, tenta com mais jogadores
+    if findLowPlayerServer(MAX_PLAYERS_FOR_DEATH_HOP) then
+        print("✅ Encontrado servidor low! Teleportando...")
+        task.wait(5)
+        return true
+    end
+    
+    print("❌ Não foi encontrar servidor low disponível")
+    return false
+end
 
 -- Sistema de chat melhorado (não bloqueante)
 local msgQueue = {}
@@ -259,57 +379,6 @@ local function startAutoChat()
     end)
 end
 
--- Funções do Hop
-local function findServer()
-    local url = 'https://games.roblox.com/v1/games/' .. PlaceID .. '/servers/Public?sortOrder=Asc&limit=100'
-    if cursor ~= "" then url = url .. '&cursor=' .. cursor end
-    
-    local success, data = pcall(function()
-        return HttpService:JSONDecode(game:HttpGet(url))
-    end)
-    
-    if not success or not data or not data.data then return false end
-    
-    cursor = data.nextPageCursor or ""
-    
-    for _, server in pairs(data.data) do
-        local id = tostring(server.id)
-        local playing = tonumber(server.playing)
-        
-        if playing and playing <= MIN_PLAYERS and id ~= game.JobId then
-            local alreadyVisited = false
-            for _, visited in ipairs(visitedServers) do
-                if tostring(visited) == id then
-                    alreadyVisited = true
-                    break
-                end
-            end
-            
-            if not alreadyVisited then
-                table.insert(visitedServers, id)
-                if #visitedServers > 50 then
-                    table.remove(visitedServers, 1)
-                end
-                writefile("NotSameServers.json", HttpService:JSONEncode(visitedServers))
-                
-                TeleportService:TeleportToPlaceInstance(PlaceID, id, LocalPlayer)
-                return true
-            end
-        end
-    end
-    
-    return false
-end
-
-local function shouldHop()
-    if not AUTO_HOP then return false end
-    if tick() - startTime < HOP_TIME then return false end
-    if #Players:GetPlayers() <= MIN_PLAYERS then return false end
-    if tick() - lastHopTime < 300 then return false end
-    
-    return true
-end
-
 -- Funções do Farm
 local function equipTool()
     local isEquipped, existsInBackpack = checkToolEquipped()
@@ -337,6 +406,14 @@ local function validateChar()
         if not isDead then
             print("Personagem morreu, aguardando respawn...")
             isDead = true
+            
+            -- Se HOP_ON_DEATH está ativado, tenta trocar de servidor
+            if HOP_ON_DEATH and deathCount < 3 then -- Limite de 3 tentativas consecutivas
+                task.wait(2) -- Espera um pouco antes de tentar trocar
+                if hopOnDeath() then
+                    return false
+                end
+            end
         end
         return false
     end
@@ -477,6 +554,10 @@ end
 -- Loop Principal
 local function mainLoop()
     print("Script iniciado")
+    print("Configurações:")
+    print("  Hop Automático: " .. tostring(AUTO_HOP))
+    print("  Hop ao Morrer: " .. tostring(HOP_ON_DEATH))
+    print("  Mensagens Auto: " .. tostring(AUTO_MSG))
     
     -- Inicializa última posição
     local hrp = Character and Character:FindFirstChild("HumanoidRootPart")
@@ -604,7 +685,13 @@ end)
 if Humanoid then
     Humanoid.Died:Connect(function()
         isDead = true
-        print("Personagem morreu")
+        print("💀 Personagem morreu!")
+        
+        -- Espera um pouco e verifica se deve trocar de servidor
+        if HOP_ON_DEATH then
+            task.wait(2)
+            hopOnDeath()
+        end
     end)
 end
 
@@ -630,9 +717,14 @@ LocalPlayer.Chatted:Connect(function(msg)
         print("Script parado")
     elseif cmd == "/hop" then
         findServer()
+    elseif cmd == "/hoplow" then
+        print("Procurando servidor low...")
+        findLowPlayerServer(MAX_PLAYERS_FOR_DEATH_HOP)
     elseif cmd == "/stats" then
         local elapsed = math.floor((tick() - startTime) / 60)
+        local currentPlayers = #Players:GetPlayers()
         print("Tempo: " .. elapsed .. "m | Dinheiro: " .. moneyCollected)
+        print("Jogadores: " .. currentPlayers .. " | Mortes: " .. deathCount)
     elseif cmd == "/msg on" then
         AUTO_MSG = true
         startAutoChat()
@@ -657,6 +749,16 @@ LocalPlayer.Chatted:Connect(function(msg)
     elseif cmd == "/reset" then
         lastActionTime = tick()
         print("Tempo de ação resetado")
+    elseif cmd == "/deathhop on" then
+        HOP_ON_DEATH = true
+        print("Hop ao morrer: ON")
+    elseif cmd == "/deathhop off" then
+        HOP_ON_DEATH = false
+        print("Hop ao morrer: OFF")
+    elseif cmd == "/forcereset" then
+        deathCount = 0
+        deathHopCooldown = 0
+        print("Contadores de morte resetados")
     end
 end)
 

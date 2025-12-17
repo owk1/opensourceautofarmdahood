@@ -1,3 +1,37 @@
+-- Esperar o servidor carregar completamente
+local function waitForGameLoad()
+    local maxWaitTime = 30 -- segundos
+    local startTime = tick()
+    
+    -- Esperar pelo workspace carregar
+    while not game:IsLoaded() and (tick() - startTime) < maxWaitTime do
+        task.wait(1)
+    end
+    
+    -- Esperar por elementos essenciais do jogo
+    local essentials = {
+        game.Workspace,
+        game.Workspace:FindFirstChild("Ignored"),
+        game.Workspace:FindFirstChild("Cashiers"),
+        game:GetService("Players").LocalPlayer
+    }
+    
+    for _, essential in ipairs(essentials) do
+        if not essential then
+            task.wait(1)
+        end
+    end
+    
+    print("Servidor carregado!")
+    return true
+end
+
+-- Chamar a função de espera antes de continuar
+if not waitForGameLoad() then
+    warn("Não foi possível carregar o servidor completamente após 30 segundos")
+    return
+end
+
 -- Serviços
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
@@ -320,7 +354,6 @@ LocalPlayer.CharacterAdded:Connect(function(newChar)
 end)
 
 -- Comandos
-local autoChatThread = nil
 LocalPlayer.Chatted:Connect(function(msg)
     local cmd = msg:lower()
     

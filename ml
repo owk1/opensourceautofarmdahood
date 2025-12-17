@@ -67,7 +67,6 @@ local AUTO_MSG = true
 local MSG_INTERVAL = 30
 local messages = {
     "buy da hood cash at letal,gg",
-    "get da hood cash accs at letal,gg",
     "get sorotonin external at letal,gg",
     "get matcha external at letal,gg"
 }
